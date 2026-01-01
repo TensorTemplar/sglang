@@ -53,10 +53,11 @@ from fastapi.responses import ORJSONResponse, Response, StreamingResponse
 
 from sglang.srt.disaggregation.utils import FAKE_BOOTSTRAP_HOST, DisaggregationMode
 from sglang.srt.entrypoints.anthropic.protocol import (
+    ANTHROPIC_API_VERSION,
     AnthropicCountTokensRequest,
     AnthropicMessagesRequest,
 )
-from sglang.srt.entrypoints.anthropic.serving import AnthropicServing
+from sglang.srt.entrypoints.anthropic.serving_messages import AnthropicServingMessages
 from sglang.srt.entrypoints.engine import (
     _launch_subprocesses,
     init_tokenizer_manager,
@@ -298,14 +299,13 @@ async def lifespan(fast_api_app: FastAPI):
     fast_api_app.state.openai_serving_detokenize = OpenAIServingDetokenize(
         _global_state.tokenizer_manager
     )
+    # Initialize Anthropic-compatible serving handler
+    fast_api_app.state.anthropic_serving_messages = AnthropicServingMessages(
+        _global_state.tokenizer_manager, _global_state.template_manager
+    )
 
     # Initialize Ollama-compatible serving handler
     fast_api_app.state.ollama_serving = OllamaServing(_global_state.tokenizer_manager)
-
-    # Initialize Anthropic-compatible serving handler
-    fast_api_app.state.anthropic_serving = AnthropicServing(
-        fast_api_app.state.openai_serving_chat
-    )
 
     # Launch tool server
     tool_server = None
@@ -1529,6 +1529,45 @@ async def v1_rerank_request(request: V1RerankReqInput, raw_request: Request):
     )
 
 
+##### Anthropic-compatible API endpoints #####
+
+
+def _validate_anthropic_version(raw_request: Request) -> None:
+    """Validate anthropic-version header and log warning if unsupported."""
+    requested_version = raw_request.headers.get("anthropic-version")
+    if requested_version and requested_version != ANTHROPIC_API_VERSION:
+        logger.warning(
+            f"Unsupported anthropic-version '{requested_version}' requested. "
+            f"Only '{ANTHROPIC_API_VERSION}' is supported. Proceeding with {ANTHROPIC_API_VERSION} behavior."
+        )
+
+
+@app.post("/v1/messages", dependencies=[Depends(validate_json_request)])
+async def anthropic_v1_messages(
+    request: AnthropicMessagesRequest, raw_request: Request
+):
+    """Anthropic-compatible messages endpoint."""
+    _validate_anthropic_version(raw_request)
+    return await raw_request.app.state.anthropic_serving_messages.handle_request(
+        request, raw_request
+    )
+
+
+@app.post("/v1/messages/count_tokens", dependencies=[Depends(validate_json_request)])
+async def anthropic_v1_count_tokens(
+    request: AnthropicCountTokensRequest, raw_request: Request
+):
+    """Anthropic-compatible token counting endpoint.
+
+    Counts tokens for a message without generating a response.
+    See: https://platform.claude.com/docs/en/build-with-claude/token-counting
+    """
+    _validate_anthropic_version(raw_request)
+    return await raw_request.app.state.anthropic_serving_messages.handle_count_tokens_request(
+        request, raw_request
+    )
+
+
 ##### Ollama-compatible API endpoints #####
 
 
@@ -1563,29 +1602,6 @@ async def ollama_tags(raw_request: Request):
 async def ollama_show(request: OllamaShowRequest, raw_request: Request):
     """Ollama-compatible show model info endpoint."""
     return raw_request.app.state.ollama_serving.get_show(request.model)
-
-
-##### Anthropic-compatible API endpoints #####
-
-
-@app.post("/v1/messages", dependencies=[Depends(validate_json_request)])
-async def anthropic_v1_messages(
-    request: AnthropicMessagesRequest, raw_request: Request
-):
-    """Anthropic-compatible Messages API endpoint."""
-    return await raw_request.app.state.anthropic_serving.handle_messages(
-        request, raw_request
-    )
-
-
-@app.post("/v1/messages/count_tokens", dependencies=[Depends(validate_json_request)])
-async def anthropic_v1_count_tokens(
-    request: AnthropicCountTokensRequest, raw_request: Request
-):
-    """Anthropic-compatible token counting endpoint."""
-    return await raw_request.app.state.anthropic_serving.handle_count_tokens(
-        request, raw_request
-    )
 
 
 ## SageMaker API

@@ -115,7 +115,6 @@ diffusion = [
   "cache-dit==1.2.0",
   "addict"
 ]
-
 tracing = [
   "opentelemetry-api",
   "opentelemetry-exporter-otlp",
@@ -144,6 +143,7 @@ all = [
   "sglang[diffusion]",
   "sglang[tracing]",
 ]
+
 
 [tool.uv.extra-build-dependencies]
 st-attn = ["torch", "setuptools"]
