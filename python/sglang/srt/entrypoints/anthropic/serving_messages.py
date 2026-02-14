@@ -816,16 +816,8 @@ class AnthropicServingMessages(ABC):
         reasoning_parser_dict = {}
         tool_call_parser_dict = {}
 
-        start_message = AnthropicMessagesResponse(
-            id=request_id,
-            content=[],
-            model=anthropic_request.model,
-            usage=AnthropicUsage(input_tokens=0, output_tokens=0),
-        )
-
-        start_event = self._create_stream_event("message_start", message=start_message)
-        yield f"event: message_start\ndata: {orjson.dumps(start_event.model_dump()).decode()}\n\n"
-
+        # Defer message_start until first chunk so we can report real input_tokens
+        message_start_sent = False
         thinking_started = False
         thinking_accumulated = ""
         text_started = False
@@ -842,6 +834,24 @@ class AnthropicServingMessages(ABC):
             async for content in self.tokenizer_manager.generate_request(
                 internal_request, raw_request
             ):
+                # Emit message_start on first chunk with real input_tokens
+                if not message_start_sent and "meta_info" in content:
+                    input_tokens = content["meta_info"].get("prompt_tokens", 0)
+                    start_message = AnthropicMessagesResponse(
+                        id=request_id,
+                        content=[],
+                        model=anthropic_request.model,
+                        usage=AnthropicUsage(
+                            input_tokens=input_tokens, output_tokens=0
+                        ),
+                    )
+                    start_data = {
+                        "type": "message_start",
+                        "message": start_message.model_dump(exclude_none=True),
+                    }
+                    yield f"event: message_start\ndata: {orjson.dumps(start_data).decode()}\n\n"
+                    message_start_sent = True
+
                 index = content.get("index", 0)
                 if "text" in content:
                     stream_buffer = stream_buffers.get(index, "")
@@ -887,7 +897,7 @@ class AnthropicServingMessages(ABC):
                             stop_event = self._create_stream_event(
                                 "content_block_stop", index=current_content_block_index
                             )
-                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                             current_content_block_index += 1
                             thinking_started = False
                             text_started = False
@@ -898,7 +908,7 @@ class AnthropicServingMessages(ABC):
                                     "content_block_stop",
                                     index=current_content_block_index,
                                 )
-                                yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                                yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                                 current_content_block_index += 1
 
                             tool_use_block = ToolUseContentBlock(
@@ -913,7 +923,7 @@ class AnthropicServingMessages(ABC):
                                 index=current_content_block_index,
                                 content_block=tool_use_block,
                             )
-                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump(exclude_none=True)).decode()}\n\n"
                             tool_use_started = True
 
                         if call_item.parameters:
@@ -926,14 +936,14 @@ class AnthropicServingMessages(ABC):
                                 index=current_content_block_index,
                                 delta=delta,
                             )
-                            yield f"event: content_block_delta\ndata: {orjson.dumps(delta_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_delta\ndata: {orjson.dumps(delta_event.model_dump(exclude_none=True)).decode()}\n\n"
 
                     if thinking_text:
                         if tool_use_started and not thinking_started:
                             stop_event = self._create_stream_event(
                                 "content_block_stop", index=current_content_block_index
                             )
-                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                             current_content_block_index += 1
                             tool_use_started = False
 
@@ -946,7 +956,7 @@ class AnthropicServingMessages(ABC):
                                 index=current_content_block_index,
                                 content_block=thinking_block,
                             )
-                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump(exclude_none=True)).decode()}\n\n"
                             thinking_started = True
 
                         thinking_accumulated += thinking_text
@@ -958,13 +968,13 @@ class AnthropicServingMessages(ABC):
                             index=current_content_block_index,
                             delta=delta,
                         )
-                        yield f"event: content_block_delta\ndata: {orjson.dumps(delta_event.model_dump()).decode()}\n\n"
+                        yield f"event: content_block_delta\ndata: {orjson.dumps(delta_event.model_dump(exclude_none=True)).decode()}\n\n"
 
                     if thinking_started and text_delta and not thinking_text:
                         stop_event = self._create_stream_event(
                             "content_block_stop", index=current_content_block_index
                         )
-                        yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                        yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                         current_content_block_index += 1
                         thinking_started = False
                         text_started = False
@@ -974,7 +984,7 @@ class AnthropicServingMessages(ABC):
                             stop_event = self._create_stream_event(
                                 "content_block_stop", index=current_content_block_index
                             )
-                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                             current_content_block_index += 1
                             tool_use_started = False
 
@@ -985,7 +995,7 @@ class AnthropicServingMessages(ABC):
                                 index=current_content_block_index,
                                 content_block=text_block,
                             )
-                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump(exclude_none=True)).decode()}\n\n"
                             text_started = True
 
                         accumulated_text += text_delta
@@ -995,7 +1005,7 @@ class AnthropicServingMessages(ABC):
                             index=current_content_block_index,
                             delta=delta,
                         )
-                        yield f"event: content_block_delta\ndata: {orjson.dumps(delta_event.model_dump()).decode()}\n\n"
+                        yield f"event: content_block_delta\ndata: {orjson.dumps(delta_event.model_dump(exclude_none=True)).decode()}\n\n"
 
                 if "tool_calls" in content or "function_calls" in content:
                     tool_calls = content.get("tool_calls") or content.get(
@@ -1019,7 +1029,7 @@ class AnthropicServingMessages(ABC):
                                     "content_block_stop",
                                     index=current_content_block_index,
                                 )
-                                yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                                yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                                 current_content_block_index += 1
                                 thinking_started = False
                                 text_started = False
@@ -1036,19 +1046,19 @@ class AnthropicServingMessages(ABC):
                                 index=current_content_block_index,
                                 content_block=tool_use_block,
                             )
-                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_start\ndata: {orjson.dumps(content_start_event.model_dump(exclude_none=True)).decode()}\n\n"
 
                             stop_event = self._create_stream_event(
                                 "content_block_stop", index=current_content_block_index
                             )
-                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+                            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
                             current_content_block_index += 1
                             stop_reason = "tool_use"
 
                 if "meta_info" in content:
                     meta = content["meta_info"]
                     final_meta_info = meta
-                    input_tokens = meta.get("prompt_tokens", 0)
+                    input_tokens = meta.get("prompt_tokens", input_tokens)
                     output_tokens = meta.get("completion_tokens", 0)
 
         except Exception as e:
@@ -1058,14 +1068,28 @@ class AnthropicServingMessages(ABC):
                 "error",
                 error=AnthropicError(type="internal_server_error", message=str(e)),
             )
-            yield f"event: error\ndata: {orjson.dumps(error_event.model_dump()).decode()}\n\n"
+            yield f"event: error\ndata: {orjson.dumps(error_event.model_dump(exclude_none=True)).decode()}\n\n"
             return
+
+        # Fallback: emit message_start if no chunks arrived
+        if not message_start_sent:
+            start_message = AnthropicMessagesResponse(
+                id=request_id,
+                content=[],
+                model=anthropic_request.model,
+                usage=AnthropicUsage(input_tokens=0, output_tokens=0),
+            )
+            start_data = {
+                "type": "message_start",
+                "message": start_message.model_dump(exclude_none=True),
+            }
+            yield f"event: message_start\ndata: {orjson.dumps(start_data).decode()}\n\n"
 
         if thinking_started or text_started or tool_use_started:
             stop_event = self._create_stream_event(
                 "content_block_stop", index=current_content_block_index
             )
-            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump()).decode()}\n\n"
+            yield f"event: content_block_stop\ndata: {orjson.dumps(stop_event.model_dump(exclude_none=True)).decode()}\n\n"
 
         if tool_use_blocks:
             stop_reason = "tool_use"
@@ -1073,34 +1097,15 @@ class AnthropicServingMessages(ABC):
             finish_reason = self._parse_finish_reason(final_meta_info)
             stop_reason = self._map_finish_reason_to_stop_reason(finish_reason)
 
-        final_usage = AnthropicUsage(
-            input_tokens=input_tokens, output_tokens=output_tokens
-        )
+        # Emit message_delta with stop_reason and output token usage
+        message_delta_data = {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"output_tokens": output_tokens},
+        }
+        yield f"event: message_delta\ndata: {orjson.dumps(message_delta_data).decode()}\n\n"
 
-        final_content_blocks = []
-        if thinking_accumulated:
-            final_content_blocks.append(
-                ThinkingContentBlock(thinking=thinking_accumulated, signature="N/A")
-            )
-        if accumulated_text:
-            final_content_blocks.append(
-                self._create_anthropic_content_block(accumulated_text)
-            )
-        if tool_use_blocks:
-            final_content_blocks.extend(tool_use_blocks)
-
-        final_message = AnthropicMessagesResponse(
-            id=request_id,
-            content=final_content_blocks,
-            model=anthropic_request.model,
-            stop_reason=stop_reason,
-            usage=final_usage,
-        )
-
-        stop_message_event = self._create_stream_event(
-            "message_stop", message=final_message
-        )
-        yield f"event: message_stop\ndata: {orjson.dumps(stop_message_event.model_dump()).decode()}\n\n"
+        yield f"event: message_stop\ndata: {orjson.dumps({'type': 'message_stop'}).decode()}\n\n"
 
     async def _handle_non_streaming_request(
         self,

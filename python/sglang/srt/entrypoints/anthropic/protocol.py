@@ -262,7 +262,7 @@ class AnthropicMessagesRequest(BaseModel):
 
 
 class AnthropicDelta(BaseModel):
-    """Delta for streaming responses"""
+    """Delta for content_block_delta streaming events"""
 
     type: Literal["text_delta", "input_json_delta", "thinking_delta"]
     text: Optional[str] = None
@@ -270,8 +270,19 @@ class AnthropicDelta(BaseModel):
     thinking: Optional[str] = None
 
 
+class AnthropicMessageDelta(BaseModel):
+    """Delta for message_delta streaming events (carries stop_reason and stop_sequence)"""
+
+    stop_reason: Optional[str] = None
+    stop_sequence: Optional[str] = None
+
+
 class AnthropicStreamEvent(BaseModel):
-    """Streaming event"""
+    """Streaming event for content_block_start/delta/stop, ping, and error events.
+
+    Message-level events (message_start, message_delta, message_stop) are
+    constructed as dicts directly since each has a unique shape.
+    """
 
     type: Literal[
         "message_start",

@@ -271,3 +271,6 @@ sgl-kernel/csrc/**/*_musa/
 
 # MUSA core dump files
 *.mudmp
+
+# slopometry session cache (auto-generated)
+.slopometry/

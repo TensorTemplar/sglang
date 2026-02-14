@@ -49,6 +49,7 @@ class TestStreaming:
     def test_messages_stream__emits_proper_event_sequence(self, client, model_name):
         """Test that streaming produces proper message structure."""
         message_start_received = False
+        message_delta_received = False
         content_block_starts = 0
         content_block_stops = 0
         message_stop_received = False
@@ -67,6 +68,9 @@ class TestStreaming:
                         assert event.message.id is not None
                         assert event.message.model is not None
 
+                elif "MessageDelta" in event_name:
+                    message_delta_received = True
+
                 elif "ContentBlockStart" in event_name:
                     content_block_starts += 1
 
@@ -77,6 +81,7 @@ class TestStreaming:
                     message_stop_received = True
 
         assert message_start_received, "Should receive message_start event"
+        assert message_delta_received, "Should receive message_delta event"
         assert message_stop_received, "Should receive message_stop event"
         assert (
             content_block_starts > 0
@@ -108,7 +113,7 @@ class TestStreaming:
     def test_messages_stream__get_final_message_returns_complete_response(
         self, client, model_name
     ):
-        """Test that get_final_message returns complete message."""
+        """Test that get_final_message returns complete message with usage and stop_reason."""
         with client.messages.stream(
             model=model_name,
             max_tokens=500,
@@ -124,6 +129,9 @@ class TestStreaming:
         assert len(final.content) > 0
         assert final.content[0].type in ["text", "thinking"]
         assert final.usage is not None
+        assert final.usage.input_tokens > 0, "input_tokens should be populated"
+        assert final.usage.output_tokens > 0, "output_tokens should be populated"
+        assert final.stop_reason is not None, "stop_reason should be set"
 
     def test_messages_stream__text_stream_helper_collects_text(
         self, client, model_name
