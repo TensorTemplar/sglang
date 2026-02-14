@@ -113,10 +113,15 @@ WORKDIR /sgl-workspace/sglang
 COPY python /sgl-workspace/sglang/python
 COPY test /sgl-workspace/sglang/test
 
+# Pre-install build deps from PyPI (avoids timeout on PyTorch wheel index)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system \
+    "setuptools>=61.0" "setuptools-scm>=8.0" wheel "grpcio-tools==1.75.1"
+
 # Install sglang in editable mode (fast, just creates .pth file)
 RUN --mount=type=cache,target=/root/.cache/uv \
     cd /sgl-workspace/sglang/python && \
-    uv pip install --system -e ".[dev]" \
+    uv pip install --system --no-build-isolation -e ".[dev]" \
     --extra-index-url https://download.pytorch.org/whl/cu129 \
     --index-strategy unsafe-best-match
 
