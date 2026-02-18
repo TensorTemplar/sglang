@@ -43,6 +43,7 @@ class TestHttpServerAdminAuth(unittest.TestCase):
         method: str,
         path: str,
         authorization_header: str | None,
+        x_api_key_header: str | None = None,
         api_key: str | None,
         admin_api_key: str | None,
         auth_level: AuthLevel,
@@ -51,6 +52,7 @@ class TestHttpServerAdminAuth(unittest.TestCase):
             method=method,
             path=path,
             authorization_header=authorization_header,
+            x_api_key_header=x_api_key_header,
             api_key=api_key,
             admin_api_key=admin_api_key,
             auth_level=auth_level,
@@ -313,6 +315,149 @@ class TestHttpServerAdminAuth(unittest.TestCase):
                     ).allowed,
                     msg=f"expected allowed for {path=} with {keys=}",
                 )
+
+
+class TestXApiKeyAuth(unittest.TestCase):
+    """Tests for Anthropic-style x-api-key header authentication."""
+
+    def _decide(self, **kwargs):
+        return decide_request_auth(**kwargs)
+
+    def test_x_api_key_accepted_for_normal_endpoint(self):
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header=None,
+            x_api_key_header="user",
+            api_key="user",
+            admin_api_key=None,
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertTrue(d.allowed)
+
+    def test_x_api_key_rejected_when_wrong(self):
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header=None,
+            x_api_key_header="wrong",
+            api_key="user",
+            admin_api_key=None,
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertFalse(d.allowed)
+
+    def test_bearer_takes_precedence_over_x_api_key(self):
+        # Correct Bearer present -> allowed, regardless of x-api-key
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header="Bearer user",
+            x_api_key_header="wrong",
+            api_key="user",
+            admin_api_key=None,
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertTrue(d.allowed)
+
+    def test_wrong_bearer_not_rescued_by_x_api_key(self):
+        # Wrong Bearer present -> rejected even if x-api-key is correct
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header="Bearer wrong",
+            x_api_key_header="user",
+            api_key="user",
+            admin_api_key=None,
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertFalse(d.allowed)
+
+    def test_x_api_key_fallback_when_authorization_absent(self):
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header=None,
+            x_api_key_header="user",
+            api_key="user",
+            admin_api_key=None,
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertTrue(d.allowed)
+
+    def test_x_api_key_for_admin_optional(self):
+        d = self._decide(
+            method="POST",
+            path="/admin_optional_demo",
+            authorization_header=None,
+            x_api_key_header="admin",
+            api_key=None,
+            admin_api_key="admin",
+            auth_level=AuthLevel.ADMIN_OPTIONAL,
+        )
+        self.assertTrue(d.allowed)
+
+    def test_x_api_key_for_admin_force(self):
+        d = self._decide(
+            method="POST",
+            path="/admin_force_demo",
+            authorization_header=None,
+            x_api_key_header="admin",
+            api_key=None,
+            admin_api_key="admin",
+            auth_level=AuthLevel.ADMIN_FORCE,
+        )
+        self.assertTrue(d.allowed)
+
+    def test_no_credentials_rejected(self):
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header=None,
+            x_api_key_header=None,
+            api_key="user",
+            admin_api_key=None,
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertFalse(d.allowed)
+
+    def test_x_api_key_with_both_keys_normal(self):
+        # NORMAL endpoint requires api_key, x-api-key should work
+        d = self._decide(
+            method="POST",
+            path="/v1/messages",
+            authorization_header=None,
+            x_api_key_header="user",
+            api_key="user",
+            admin_api_key="admin",
+            auth_level=AuthLevel.NORMAL,
+        )
+        self.assertTrue(d.allowed)
+
+    def test_x_api_key_with_both_keys_admin_optional(self):
+        # ADMIN_OPTIONAL requires admin_api_key when both configured
+        d = self._decide(
+            method="POST",
+            path="/admin_optional_demo",
+            authorization_header=None,
+            x_api_key_header="admin",
+            api_key="user",
+            admin_api_key="admin",
+            auth_level=AuthLevel.ADMIN_OPTIONAL,
+        )
+        self.assertTrue(d.allowed)
+
+        # User key should NOT work on admin_optional when admin_api_key configured
+        d2 = self._decide(
+            method="POST",
+            path="/admin_optional_demo",
+            authorization_header=None,
+            x_api_key_header="user",
+            api_key="user",
+            admin_api_key="admin",
+            auth_level=AuthLevel.ADMIN_OPTIONAL,
+        )
+        self.assertFalse(d2.allowed)
 
 
 if __name__ == "__main__":
