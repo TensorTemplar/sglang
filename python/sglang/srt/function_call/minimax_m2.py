@@ -326,20 +326,16 @@ class MinimaxM2Detector(BaseFormatDetector):
                     # Add closing brace to complete the JSON object
                     current_streamed = self.streamed_args_for_tool[self.current_tool_id]
                     if current_streamed:
-                        # Count opening and closing braces to check if JSON is complete
-                        open_braces = current_streamed.count("{")
-                        close_braces = current_streamed.count("}")
-                        if open_braces > close_braces:
-                            calls.append(
-                                ToolCallItem(
-                                    tool_index=self.current_tool_id,
-                                    name=None,
-                                    parameters="}",
-                                )
+                        calls.append(
+                            ToolCallItem(
+                                tool_index=self.current_tool_id,
+                                name=None,
+                                parameters="}",
                             )
-                            self.streamed_args_for_tool[self.current_tool_id] = (
-                                current_streamed + "}"
-                            )
+                        )
+                        self.streamed_args_for_tool[self.current_tool_id] = (
+                            current_streamed + "}"
+                        )
 
                     # Complete the tool call
                     self._buf = self._buf[

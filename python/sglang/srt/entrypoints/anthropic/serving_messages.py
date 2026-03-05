@@ -53,6 +53,7 @@ from sglang.srt.entrypoints.openai.protocol import (
     ToolChoiceFuncName,
 )
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
+from sglang.srt.function_call.json_array_parser import JsonArrayParser
 from sglang.srt.function_call.utils import get_json_schema_constraint
 from sglang.srt.managers.io_struct import GenerateReqInput
 from sglang.srt.managers.template_manager import TemplateManager
@@ -166,6 +167,16 @@ class AnthropicServingMessages(ABC):
 
     def _request_id_prefix(self) -> str:
         return "msg_"
+
+    @staticmethod
+    def _is_forced_tool_use(request: AnthropicMessagesRequest) -> bool:
+        """Check if tool_choice forces tool use (any/tool), meaning the model
+        output is constrained to a raw JSON array by json_schema and must be
+        parsed directly instead of via model-specific detectors."""
+        return request.tool_choice is not None and request.tool_choice.type in (
+            "any",
+            "tool",
+        )
 
     # DESIGN NOTE: Some models that expect thinking blocks re-wrapped as <think>...</think> in conversation history
     # and sent back as part of "interleaved thinking".
@@ -815,6 +826,7 @@ class AnthropicServingMessages(ABC):
         stream_buffers = {}
         reasoning_parser_dict = {}
         tool_call_parser_dict = {}
+        forced_tool_use = self._is_forced_tool_use(anthropic_request)
 
         # Defer message_start until first chunk so we can report real input_tokens
         message_start_sent = False
@@ -858,8 +870,9 @@ class AnthropicServingMessages(ABC):
                     text_delta = content["text"][len(stream_buffer) :]
                     stream_buffers[index] = stream_buffer + text_delta
 
+                    # Skip reasoning parser when output is constrained JSON
                     thinking_text = None
-                    if self.reasoning_parser:
+                    if self.reasoning_parser and not forced_tool_use:
                         if index not in reasoning_parser_dict:
                             is_force_reasoning = (
                                 self.template_manager.force_reasoning
@@ -876,20 +889,39 @@ class AnthropicServingMessages(ABC):
                         ].parse_stream_chunk(text_delta)
 
                     tool_calls_from_stream = []
-                    if self.tool_call_parser and anthropic_request.tools:
+                    if anthropic_request.tools and (
+                        forced_tool_use or self.tool_call_parser
+                    ):
                         if index not in tool_call_parser_dict:
+                            if forced_tool_use:
+                                # Use JsonArrayParser for constrained JSON output
+                                tool_call_parser_dict[index] = JsonArrayParser()
+                            else:
+                                openai_tools = (
+                                    self._convert_anthropic_tools_to_openai_objects(
+                                        anthropic_request.tools
+                                    )
+                                )
+                                tool_call_parser_dict[index] = FunctionCallParser(
+                                    openai_tools, self.tool_call_parser
+                                )
+
+                        parser = tool_call_parser_dict[index]
+                        if isinstance(parser, JsonArrayParser):
                             openai_tools = (
                                 self._convert_anthropic_tools_to_openai_objects(
                                     anthropic_request.tools
                                 )
                             )
-                            tool_call_parser_dict[index] = FunctionCallParser(
-                                openai_tools, self.tool_call_parser
+                            result = parser.parse_streaming_increment(
+                                text_delta, openai_tools
                             )
-
-                        text_delta, tool_calls_from_stream = tool_call_parser_dict[
-                            index
-                        ].parse_stream_chunk(text_delta)
+                            text_delta = result.normal_text or ""
+                            tool_calls_from_stream = result.calls
+                        else:
+                            text_delta, tool_calls_from_stream = (
+                                parser.parse_stream_chunk(text_delta)
+                            )
 
                     for call_item in tool_calls_from_stream:
                         # Close active blocks before starting tool_use
@@ -1159,8 +1191,36 @@ class AnthropicServingMessages(ABC):
         content_blocks = []
         remaining_text = content
 
+        # When tool_choice is "any" or "tool", the model output is constrained
+        # to a raw JSON array by json_schema. Parse it directly instead of using
+        # model-specific detectors (which look for tags like <tool_call>).
+        forced_tool_use = self._is_forced_tool_use(anthropic_request)
+
         tool_calls = []
-        if self.tool_call_parser and anthropic_request.tools:
+        if forced_tool_use and anthropic_request.tools:
+            try:
+                tool_call_data = orjson.loads(content)
+                for tool in tool_call_data:
+                    tool_calls.append(
+                        ToolUseContentBlock(
+                            id=f"toolu_{uuid.uuid4().hex[:24]}",
+                            name=tool["name"],
+                            input=tool.get("parameters", {}),
+                        )
+                    )
+                remaining_text = ""
+                logger.debug(
+                    f"Parsed {len(tool_calls)} tool calls from constrained JSON output"
+                )
+            except (orjson.JSONDecodeError, KeyError, TypeError) as e:
+                logger.warning(
+                    f"Failed to parse constrained JSON tool calls, "
+                    f"falling back to model-specific parser: {e}"
+                )
+                # Fall through to model-specific parsing below
+                tool_calls = []
+
+        if not tool_calls and self.tool_call_parser and anthropic_request.tools:
             try:
                 openai_tools = self._convert_anthropic_tools_to_openai_objects(
                     anthropic_request.tools
@@ -1189,8 +1249,9 @@ class AnthropicServingMessages(ABC):
                 logger.error(f"Traceback: {get_exception_traceback()}")
                 raise
 
+        # Skip reasoning parser when output is constrained JSON (no thinking tags possible)
         thinking_text = ""
-        if self.reasoning_parser:
+        if self.reasoning_parser and not forced_tool_use:
             try:
                 parser = ReasoningParser(
                     model_type=self.reasoning_parser,
